@@ -2,10 +2,19 @@
     const delay = (ms) => new Promise(res => setTimeout(res, ms));
     let scoreDetected = false;
 
-    // Function to patch a specific window context
+    // ADDED: Global observer to catch cross-origin iframe requests
+    const observer = new PerformanceObserver((list) => {
+        if (list.getEntries().some(entry => entry.name.includes('scores'))) {
+            console.log("%c [DETECTION] Signal caught via Performance API! ", "color: #3498db; font-weight: bold;");
+            scoreDetected = true;
+        }
+    });
+    observer.observe({ entryTypes: ['resource'] });
+
     function applyInterceptor(win) {
         try {
-            // Patch Fetch
+            // Prevent double-patching
+            if (win._patched) return;
             const orgFetch = win.fetch;
             win.fetch = async (...args) => {
                 const url = args[0] instanceof Request ? args[0].url : args[0];
@@ -16,7 +25,6 @@
                 return orgFetch(...args);
             };
 
-            // Patch XHR
             const orgOpen = win.XMLHttpRequest.prototype.open;
             win.XMLHttpRequest.prototype.open = function(method, url) {
                 if (typeof url === 'string' && url.includes('scores')) {
@@ -25,18 +33,15 @@
                 }
                 return orgOpen.apply(this, arguments);
             };
-        } catch (e) {
-            // Ignore cross-origin frame errors
-        }
+            win._patched = true;
+        } catch (e) {}
     }
 
-    // Apply to main window and all existing iframes
     applyInterceptor(window);
     Array.from(document.querySelectorAll('iframe')).forEach(frm => applyInterceptor(frm.contentWindow));
 
     async function autoAdvance() {
         while (true) {
-            // Re-scan for buttons and active items inside the DOM
             const nextBtn = document.querySelector('.ProductViewer-nav-button-next') || 
                             Array.from(document.querySelectorAll('.ProductViewer-nav-button')).find(b => b.innerText.includes('Next'));
             
@@ -45,6 +50,9 @@
 
             if (isText) {
                 scoreDetected = false;
+                // ADDED: Clear network buffer to avoid old signals
+                performance.clearResourceTimings(); 
+                
                 console.log("Text module: Waiting for server score...");
                 window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
 
@@ -53,8 +61,6 @@
                     await delay(1000);
                     seconds++;
                     if (seconds % 5 === 0) console.log(`Searching frames for signal... ${seconds}s`);
-                    
-                    // Periodically re-patch iframes in case they reloaded
                     Array.from(document.querySelectorAll('iframe')).forEach(frm => applyInterceptor(frm.contentWindow));
                 }
                 console.log("Success. Moving on.");
@@ -64,6 +70,8 @@
             }
 
             if (nextBtn) {
+                // ADDED: Reset flag immediately before navigation to prevent race conditions
+                scoreDetected = false;
                 nextBtn.click();
                 await delay(5000);
             } else {

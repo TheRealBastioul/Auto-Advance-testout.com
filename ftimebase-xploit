@@ -2,19 +2,41 @@
     const delay = (ms) => new Promise(res => setTimeout(res, ms));
     let scoreDetected = false;
 
-    // Use PerformanceObserver to bypass cross-origin iframe restrictions
-    const observer = new PerformanceObserver((list) => {
-        for (const entry of list.getEntries()) {
-            if (entry.name.includes('scores')) {
-                console.log("%c [DETECTION] Score request observed via Performance API ", "color: #2ecc71; font-weight: bold;");
-                scoreDetected = true;
-            }
+    // Function to patch a specific window context
+    function applyInterceptor(win) {
+        try {
+            // Patch Fetch
+            const orgFetch = win.fetch;
+            win.fetch = async (...args) => {
+                const url = args[0] instanceof Request ? args[0].url : args[0];
+                if (typeof url === 'string' && url.includes('scores')) {
+                    console.log("%c [DETECTION] Signal caught in Frame! ", "color: #2ecc71; font-weight: bold;");
+                    scoreDetected = true;
+                }
+                return orgFetch(...args);
+            };
+
+            // Patch XHR
+            const orgOpen = win.XMLHttpRequest.prototype.open;
+            win.XMLHttpRequest.prototype.open = function(method, url) {
+                if (typeof url === 'string' && url.includes('scores')) {
+                    console.log("%c [DETECTION] XHR caught in Frame! ", "color: #2ecc71; font-weight: bold;");
+                    scoreDetected = true;
+                }
+                return orgOpen.apply(this, arguments);
+            };
+        } catch (e) {
+            // Ignore cross-origin frame errors
         }
-    });
-    observer.observe({ entryTypes: ['resource'] });
+    }
+
+    // Apply to main window and all existing iframes
+    applyInterceptor(window);
+    Array.from(document.querySelectorAll('iframe')).forEach(frm => applyInterceptor(frm.contentWindow));
 
     async function autoAdvance() {
         while (true) {
+            // Re-scan for buttons and active items inside the DOM
             const nextBtn = document.querySelector('.ProductViewer-nav-button-next') || 
                             Array.from(document.querySelectorAll('.ProductViewer-nav-button')).find(b => b.innerText.includes('Next'));
             
@@ -22,30 +44,29 @@
             const isText = activeLink && activeLink.querySelector('.fa-file-lines');
 
             if (isText) {
-                // Clear state for new module
                 scoreDetected = false;
-                performance.clearResourceTimings(); 
-                
-                console.log("Text module: Waiting for score...");
+                console.log("Text module: Waiting for server score...");
                 window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
 
-                let timeout = 0;
-                while (!scoreDetected && timeout < 30) { // 30s safety timeout
+                let seconds = 0;
+                while (!scoreDetected) {
                     await delay(1000);
-                    timeout++;
+                    seconds++;
+                    if (seconds % 5 === 0) console.log(`Searching frames for signal... ${seconds}s`);
+                    
+                    // Periodically re-patch iframes in case they reloaded
+                    Array.from(document.querySelectorAll('iframe')).forEach(frm => applyInterceptor(frm.contentWindow));
                 }
-                console.log(scoreDetected ? "Success. Moving on." : "Timeout reached. Proceeding anyway.");
+                console.log("Success. Moving on.");
             } else {
                 console.log("Skipping non-text module...");
-                await delay(2000);
+                await delay(3000);
             }
 
             if (nextBtn) {
-                scoreDetected = false; // Reset before click
                 nextBtn.click();
-                await delay(5000); // Wait for page transition
+                await delay(5000);
             } else {
-                console.log("Finished or Next button not found.");
                 break;
             }
         }
